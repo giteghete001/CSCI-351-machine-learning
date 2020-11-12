@@ -26,222 +26,236 @@ THE SOFTWARE.
 /* fabs */
 #include <math.h>
 
+/* MPI API */
+#include <mpi.h>
+
 /* printf, fopen, fclose, fscanf, scanf */
 #include <stdio.h>
 
 /* EXIT_SUCCESS, malloc, calloc, free, qsort */
 #include <stdlib.h>
 
+#define MPI_SIZE_T MPI_UNSIGNED_LONG
+
 struct distance_metric {
   size_t viewer_id;
   double distance;
 };
 
+static int
+cmp(void const *ap, void const *bp)
+{
+  struct distance_metric const a = *(struct distance_metric*)ap;
+  struct distance_metric const b = *(struct distance_metric*)bp;
+
+  return a.distance < b.distance ? -1 : 1;
+}
+
 int
 main(int argc, char * argv[])
 {
-  size_t n, m;
+  int ret, p, rank;
+  size_t n, m, k;
+  double * rating;
+
+  /* Initialize MPI environment. */
+  ret = MPI_Init(&argc, &argv);
+  assert(MPI_SUCCESS == ret);
+
+  /* Get size of world communicator. */
+  ret = MPI_Comm_size(MPI_COMM_WORLD, &p);
+  assert(ret == MPI_SUCCESS);
+
+  /* Get my rank. */
+  ret = MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+  assert(ret == MPI_SUCCESS);
 
   /* Validate command line arguments. */
   assert(2 == argc);
 
-  /* ... */
-  char const * const fn = argv[1];
+  /* Read input --- only if your rank 0. */
+  if (0 == rank) {
+    /* ... */
+    char const * const fn = argv[1];
 
-  /* Validate input. */
-  assert(fn);
+    /* Validate input. */
+    assert(fn);
 
-  /* Open file. */
-  FILE * const fp = fopen(fn, "r");
-  assert(fp);
+    /* Open file. */
+    FILE * const fp = fopen(fn, "r");
+    assert(fp);
 
-  /* Read file. */
-  fscanf(fp, "%zu %zu", &n, &m);
+    /* Read file. */
+    fscanf(fp, "%zu %zu", &n, &m);
 
-  /* Allocate memory. */
-  double * const rating = malloc(n * m * sizeof(*rating));
+    /* Allocate memory. */
+    rating = malloc(n * m * sizeof(*rating));
 
-  /* Check for success. */
-  assert(rating);
+    /* Check for success. */
+    assert(rating);
 
-  for (size_t i = 0; i < n; i++) {
-    for (size_t j = 0; j < m; j++) {
-      fscanf(fp, "%lf", &rating[i * m + j]);
+    for (size_t i = 0; i < n; i++) {
+      for (size_t j = 0; j < m; j++) {
+        fscanf(fp, "%lf", &rating[i * m + j]);
+      }
     }
+
+    /* Close file. */
+    ret = fclose(fp);
+    assert(!ret);
   }
 
-  /* Close file. */
-  int const ret = fclose(fp);
-  assert(!ret);
+  /* Send number of viewers and movies to rest of processes. */
+  if (0 == rank) {
+    for (int r = 1; r < p; r++) {
+      ret = MPI_Send(&n, 1, MPI_SIZE_T, r, 0, MPI_COMM_WORLD);
+      assert(MPI_SUCCESS == ret);
+      ret = MPI_Send(&m, 1, MPI_SIZE_T, r, 0, MPI_COMM_WORLD);
+      assert(MPI_SUCCESS == ret);
+    }
+  } else {
+      ret = MPI_Recv(&n, 1, MPI_SIZE_T, 0, 0, MPI_COMM_WORLD,
+        MPI_STATUS_IGNORE);
+      assert(MPI_SUCCESS == ret);
+      ret = MPI_Recv(&m, 1, MPI_SIZE_T, 0, 0, MPI_COMM_WORLD,
+        MPI_STATUS_IGNORE);
+      assert(MPI_SUCCESS == ret);
+  }
+
+  /* Compute base number of viewers. */
+  size_t const base = 1 + ((n - 1) / p); // ceil(n / p)
+
+  /* Compute local number of viewers. */
+  size_t const ln = (rank + 1) * base > n ? n - rank * base : base;
+
+  /* Send viewer data to rest of processes. */
+  if (0 == rank) {
+    for (int r = 1; r < p; r++) {
+      size_t const rn = (r + 1) * base > n ? n - r * base : base;
+      ret = MPI_Send(rating + r * base * m, rn * m, MPI_DOUBLE, r, 0,
+        MPI_COMM_WORLD);
+      assert(MPI_SUCCESS == ret);
+    }
+  } else {
+    /* Allocate memory. */
+    rating = malloc(ln * m * sizeof(*rating));
+
+    /* Check for success. */
+    assert(rating);
+
+    ret = MPI_Recv(rating, ln * m, MPI_DOUBLE, 0, 0, MPI_COMM_WORLD,
+      MPI_STATUS_IGNORE);
+    assert(MPI_SUCCESS == ret);
+  }
 
   /* Allocate more memory. */
-  double * const urating = malloc(m * sizeof(*urating));
+  double * const urating = malloc((m - 1) * sizeof(*urating));
 
   /* Check for success. */
   assert(urating);
 
-  /* Get user input. */
-  for (size_t j = 0; j < m - 1; j++) {
-    printf("Enter your rating for movie %zu: ", j + 1);
-    scanf("%lf", &urating[j]);
+  /* Get user input and send it to rest of processes. */
+  if (0 == rank) {
+    for (size_t j = 0; j < m - 1; j++) {
+      printf("Enter your rating for movie %zu: ", j + 1);
+      fflush(stdout);
+      scanf("%lf", &urating[j]);
+    }
+
+    for (int r = 1; r < p; r++) {
+      ret = MPI_Send(urating, m - 1, MPI_DOUBLE, r, 0, MPI_COMM_WORLD);
+      assert(MPI_SUCCESS == ret);
+    }
+  } else {
+    ret = MPI_Recv(urating, m - 1, MPI_DOUBLE, 0, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+    assert(MPI_SUCCESS == ret);
   }
+
 
   /* Allocate more memory. */
-  //double prob[10] = { 0.0 };
-  double prob4[10] = { 0.0 };
-  double prob3[10] = { 0.0 };
-  double prob2[10] = { 0.0 };
-  double prob1[10] = { 0.0 };
+  struct distance_metric * const distance = calloc(n, sizeof(*distance));
+
+  /* Check for success. */
+  assert(distance);
+
+  /* Compute distances. */
 
   
-  /* Compute probabilities Movie 1 */
-  for (int k = 0; k < 10; k++) {
-    for (size_t i = 0; i < n; i++) {
-     
-
-	if((rating[i * m + 0] == urating[0]) && (rating[i * m + 4] == (k + 1) / 2.0))
-	{
-		prob1[k] += ((rating[i * m + 0] == (k + 1) / 2.0));
-		//printf("Movie 1's ratings: \n prob[%d] = %lf\n", k, prob1[k]);
-	}
-    }
+  for(int i=0; i<ln; i++)
+  {
+    distance[i].viewer_id = i;
+    for (size_t j = 1; j < m - 1; j++) 
+     {
+     	distance[i].distance += fabs(urating[j] - rating[i * m + j]); 	 	
+     }
   }
+	//printf("I got through the first for loop \n");
+
+ if(rank != 0)
+  {
+    	  ret = MPI_Send(distance, ln, MPI_DOUBLE, 0, 0, MPI_COMM_WORLD);
+    	  assert(MPI_SUCCESS == ret);
+	//printf("I got through the if statement \n");
+   }
+	
+else
+{
+	for(int r = 1; r < p; r++)
+ 	 {
+		ret = MPI_Recv(distance, base, MPI_DOUBLE, r, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+    		assert(MPI_SUCCESS == ret);
+    	 }
+
+}
+//printf("I got through the else statement \n");
+if(rank == 0)
+{
+	
+	
+  /* Sort distances. */
   
-  /* Compute probabilities Movie 2 */
-  for (int k = 0; k < 10; k++) {
-    for (size_t i = 0; i < n; i++) {
-    
+  qsort(distance, n, sizeof(*distance), cmp);
 
-	if((rating[i * m + 1] == urating[1]) && (rating[i * m + 4] == (k + 1) / 2.0))
-	{
-		  prob2[k] += (rating[i * m + 1] == (k + 1) / 2.0);
-    
-		//printf("Movie 2's ratings: \n prob[%d] = %lf\n", k, prob2[k]);
-	}
-	}
+  /* Get user input. */
+  printf("Enter the number of similar viewers to report: ");
+  fflush(stdout);
+  scanf("%zu", &k);
 
+  /* Output k viewers who are least different from the user. */
+  printf("Viewer ID   Movie five   Distance\n");
+  printf("---------------------------------\n");
+
+  for (size_t i = 0; i < k; i++) {
+    printf("%9zu   %10.1lf   %8.1lf\n", distance[i].viewer_id + 1,
+      rating[distance[i].viewer_id * m + 4], distance[i].distance);
   }
 
+  printf("---------------------------------\n");
 
-  /* Compute probabilities Movie 3 */
-  for (int k = 0; k < 10; k++) {
-    for (size_t i = 0; i < n; i++) {
-    
-    
-
-	if((rating[i * m + 2] == urating[2]) && (rating[i * m + 4] == (k + 1) / 2.0))
-	{
-		prob3[k] += (rating[i * m + 2] == (k + 1) / 2.0);
-	//printf("Movie 3's ratings: \nprob[%d] = %lf\n", k, prob3[k]);
-	}
-	}
-  }
-
-  
-  /* Compute probabilities Movie 4 */
-  for (int k = 0; k < 10; k++) {
-    for (size_t i = 0; i < n; i++) {
-      
-    	
-
-	if((rating[i * m + 3] == urating[3]) && (rating[i * m + 4] == (k + 1) / 2.0)){
-		prob4[k] += (rating[i * m + 3] == (k + 1) / 2.0);
-		//printf("Movie 4's ratings: \nprob[%d] = %lf\n", k, prob4[k]);
-		
-	}
-	}
-  }
-
- 
-  /* Compute probabilities */
-  /*for (int k = 0; k < 10; k++) {
-    for (size_t i = 0; i < n; i++) {
-      prob[k] += (rating[i * m + 4] == (k + 1) / 2.0);
-    }
-  }*/
-
-   //Finalize computation of probabilities. 
-  for (int k = 0; k < 10; k++) {
-    //prob[k] /= n;
-    prob1[k] /= n;
-    prob2[k] /= n;
-    prob3[k] /= n;
-    prob4[k] /= n;
-  }
-
-  for (int k = 0; k < 10; k++) {
-    //printf("prob[%d] = %lf\n", k, prob[k]);
-    printf("Movie 1's ratings");
-    printf("prob[%d] = %lf\n", k, prob1[k]);
-  }
-  for (int k = 0; k < 10; k++) {
-    //printf("prob[%d] = %lf\n", k, prob[k]);
-    printf("Movie 2's ratings");
-    printf("prob[%d] = %lf\n", k, prob2[k]);
-  }
-  for (int k = 0; k < 10; k++) {
-    //printf("prob[%d] = %lf\n", k, prob[k]);
-    printf("Movie 3's ratings");
-    printf("prob[%d] = %lf\n", k, prob3[k]);
-  }
-  for (int k = 0; k < 10; k++) {
-    //printf("prob[%d] = %lf\n", k, prob[k]);
-    printf("Movie 4's ratings");
-    printf("prob[%d] = %lf\n", k, prob4[k]);
+  /* Compute the average to make the prediction. */
+  double sum = 0.0;
+  for (size_t i = 0; i < k; i++) {
+    sum += rating[distance[i].viewer_id * m + 4];
   }
 
   /* Output prediction. */
-
-//double max = 0;
-//double maxEquation = prob[k] * prob1[k] * prob2[k] * prob3[k] * prob4[k];
-
-
-
-/* Allocate more memory. */
-  //double * const maximum = malloc(m * sizeof(*maximum));
-
-  /*for (int k = 0; k < 10; k++) {
-    for (size_t i = 0; i < n; i++) {
-	
-	 if(rating[i * m + 3] == urating[3] && prob4[k]){
-		prob4[k] /= n;
-		printf("Movie 4's ratings: \nprob[%d] = %lf\n", k, prob4[k]);
-		
-	}
-prob[k] += (rating[i * m + 4] == (k + 1) / 2.0);
-prob1[k] += (rating[i * m + 0] == (k + 1) / 2.0);
-prob2[k] += (rating[i * m + 1] == (k + 1) / 2.0);
-prob3[k] += (rating[i * m + 2] == (k + 1) / 2.0);
-prob4[k] += (rating[i * m + 3] == (k + 1) / 2.0);
+  printf("The predicted rating for movie five is %.1lf.\n", sum / k);
 }
-}*/
-
-double maxEquation = 0;
-double equation = 0;
-
-for (int k = 0; k<10;k++){
-for(size_t i = 0; i < n; i++){
-equation = ((rating[i * m + 4] == (rating[i * m + 1] == (k + 1) / 2.0)) * (rating[i * m + 0] == urating[0] && rating[i * m + 4] == ((rating[i * m + 0] == (k + 1) / 2.0))) * (rating[i * m + 1] == urating[1] && rating[i * m + 4] == (rating[i * m + 1] == (k + 1) / 2.0)) * (rating[i * m + 2] == urating[2] && rating[i * m + 4] == (rating[i * m + 2] == (k + 1) / 2.0)) * (rating[i * m + 3] == urating[3] && rating[i * m + 4] == (rating[i * m + 3] == (k + 1) / 2.0)));
-
-
-if (equation > maxEquation){
-maxEquation = equation;
-}
-
-
-}
-
-}
-//maxEquation = prob[k] * prob1[k] * prob2[k] * prob3[k] * prob4[k];
-printf("The predicted rating for movie five is %.1lf.\n", maxEquation);
-
 
   /* Deallocate memory. */
   free(rating);
   free(urating);
+  free(distance);
+
+  ret = MPI_Finalize();
+  assert(MPI_SUCCESS == ret);
 
   return EXIT_SUCCESS;
+  
+
 }
 
+/*
 
 
+*/
