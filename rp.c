@@ -1,5 +1,5 @@
 /*
-Copyright (c) 2016-2020 Jeremy Iverson
+Copyright (c) 2016-2020 Jeremy Iverson & Godgift
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -173,7 +173,15 @@ main(int argc, char * argv[])
 
 
   /* Allocate more memory. */
-  struct distance_metric * const distance = calloc(n, sizeof(*distance));
+  double * distance;
+
+if(rank == 0)
+{
+  distance = calloc(n, sizeof(*distance)); 
+}
+else{
+  distance = calloc(ln, sizeof(*distance));
+}	
 
   /* Check for success. */
   assert(distance);
@@ -181,12 +189,11 @@ main(int argc, char * argv[])
   /* Compute distances. */
 
   
-  for(int i=0; i<ln; i++)
+  for(size_t i=0; i<ln; i++)
   {
-    distance[i].viewer_id = i;
-    for (size_t j = 1; j < m - 1; j++) 
+    for (size_t j = 0; j < m - 1; j++) 
      {
-     	distance[i].distance += fabs(urating[j] - rating[i * m + j]); 	 	
+     	distance[i] += fabs(urating[j] - rating[i * m + j]); 	 	
      }
   }
 	//printf("I got through the first for loop \n");
@@ -202,7 +209,8 @@ else
 {
 	for(int r = 1; r < p; r++)
  	 {
-		ret = MPI_Recv(distance, base, MPI_DOUBLE, r, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+		size_t const rn = (r + 1) * base > n ? n - r * base : base;
+		ret = MPI_Recv(distance + r * base, rn, MPI_DOUBLE, r, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
     		assert(MPI_SUCCESS == ret);
     	 }
 
@@ -210,11 +218,17 @@ else
 //printf("I got through the else statement \n");
 if(rank == 0)
 {
-	
-	
+  struct distance_metric * distanceTwo = malloc( n * sizeof(*distanceTwo));	
+  assert(distanceTwo); 
+
+  for(size_t i = 0; i < n; i++){
+	distanceTwo[i].viewer_id = i; 
+	distanceTwo[i].distance = distance[i]; 
+
+	}
   /* Sort distances. */
   
-  qsort(distance, n, sizeof(*distance), cmp);
+  qsort(distanceTwo, n, sizeof(*distanceTwo), cmp);
 
   /* Get user input. */
   printf("Enter the number of similar viewers to report: ");
@@ -226,8 +240,8 @@ if(rank == 0)
   printf("---------------------------------\n");
 
   for (size_t i = 0; i < k; i++) {
-    printf("%9zu   %10.1lf   %8.1lf\n", distance[i].viewer_id + 1,
-      rating[distance[i].viewer_id * m + 4], distance[i].distance);
+    printf("%9zu   %10.1lf   %8.1lf\n", distanceTwo[i].viewer_id + 1,
+      rating[distanceTwo[i].viewer_id * m + 4], distanceTwo[i].distance);
   }
 
   printf("---------------------------------\n");
@@ -235,11 +249,12 @@ if(rank == 0)
   /* Compute the average to make the prediction. */
   double sum = 0.0;
   for (size_t i = 0; i < k; i++) {
-    sum += rating[distance[i].viewer_id * m + 4];
+    sum += rating[distanceTwo[i].viewer_id * m + 4];
   }
 
   /* Output prediction. */
   printf("The predicted rating for movie five is %.1lf.\n", sum / k);
+  free(distanceTwo);
 }
 
   /* Deallocate memory. */
